@@ -1,0 +1,42 @@
+[package]
+name = "chamomile"
+version = "0.9.0"
+authors = ["Dev <dev@cympletech.com>"]
+readme = "README.md"
+description = "Another P2P Library. Support IoT devices."
+repository = "https://github.com/cympletech/chamomile"
+keywords = ["distributed", "blockchain", "p2p", "libp2p", "peer-to-peer"]
+license = "MIT/Apache-2.0"
+edition = "2021"
+
+[workspace]
+members = [
+    "types",
+]
+
+[dependencies]
+aes-gcm = "0.9"
+bit-vec = "0.6"
+bytes = {version = "1.1", features = ["serde"] }
+futures-util = { version = "0.3", default-features = false }
+quinn = { version = "0.8", features = ["ring"], default-features = false }
+quinn-proto = "0.8"
+rand_chacha = "0.3"
+rcgen = "0.9"
+rustls = { version = "0.20", features = ["dangerous_configuration"] }
+serde = { version = "1.0", features = ["derive"] }
+structopt = "0.3"
+thiserror = "1.0"
+tracing = "0.1"
+tokio = { version = "1", features = ["full"] }
+webpki = "0.22"
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
+chamomile_types = { version = "0.9", path = "./types" }
+
+[dependencies.x25519-dalek]
+git = "https://github.com/cympletech/x25519-dalek"
+
+[dev-dependencies]
+console-subscriber = "0.1"
+tracing-subscriber = "0.3"
