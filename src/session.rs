@@ -13,6 +13,7 @@ use chamomile_types::{
     Peer, PeerId,
 };
 
+use crate::buffer::BufferKey;
 use crate::global::Global;
 use crate::hole_punching::{nat, DHT};
 use crate::kad::KadValue;
@@ -26,7 +27,7 @@ fn own_spawn(p: Peer, global: Arc<Global>) {
     tokio::spawn(async move {
         // add to stable buffer.
         let mut buffer_lock = global.buffer.write().await;
-        if buffer_lock.add_connect(p.assist, 0, vec![]) {
+        if buffer_lock.add_connect(BufferKey::Peer(p.assist), 0, vec![]) {
             debug!("Outside: StableConnect is processing, save to buffer.");
         }
         drop(buffer_lock);
@@ -49,6 +50,12 @@ pub(crate) async fn direct_stable(
     let (stream_sender, mut stream_receiver) = new_endpoint_channel(); // session's use.
     let (mut session_key, remote_pk) = global.generate_remote();
 
+    let bufferkey = if to.effective_id() {
+        BufferKey::Peer(to.id)
+    } else {
+        BufferKey::Addr(to.socket)
+    };
+
     // 1. send stable connect.
     global
         .trans_send(
@@ -68,16 +75,15 @@ pub(crate) async fn direct_stable(
     {
         // 3.1.1 if ok connected. keep it and update to stable.
         let remote_id = remote_peer.id;
-        if !to.effective_id() && remote_id != to.id {
+        if to.effective_id() && remote_id != to.id {
             warn!("CHAMOMILE: STABLE CONNECT FAILURE UNKNOWN PEER.");
+            let _ = endpoint_sender.send(EndpointMessage::Close).await;
             return Err(new_io_error("session stable unknown peer."));
         }
 
         let mut is_own = false;
         if &remote_id == global.peer_id() {
             if &remote_peer.assist == global.assist_id() {
-                warn!("CHAMOMILE: STABLE CONNECT NERVER TO SELF.");
-                let _ = endpoint_sender.send(EndpointMessage::Close).await;
                 if tid != 0 {
                     global
                         .out_send(ReceiveMessage::Delivery(
@@ -88,6 +94,8 @@ pub(crate) async fn direct_stable(
                         ))
                         .await?;
                 }
+                warn!("CHAMOMILE: STABLE CONNECT NERVER TO SELF.");
+                let _ = endpoint_sender.send(EndpointMessage::Close).await;
                 return Err(new_io_error("session stable self failure."));
             }
             is_own = true;
@@ -100,7 +108,7 @@ pub(crate) async fn direct_stable(
 
         // 3.1.2 check & update session key.
         if !session_key.complete(&remote_id, dh_key) {
-            global.buffer.write().await.remove_connect(&toid);
+            global.buffer.write().await.remove_connect(bufferkey);
             return Err(new_io_error("session stable key failure."));
         }
 
@@ -111,6 +119,7 @@ pub(crate) async fn direct_stable(
         let buffers = global
             .add_tmp(
                 toid,
+                bufferkey,
                 KadValue(session_sender.clone(), stream_sender, remote_peer),
                 true,
             )
@@ -167,7 +176,12 @@ pub(crate) async fn direct_stable(
                     ))
                     .await?;
             }
-            global.buffer.write().await.remove_connect(&toid);
+            let key = if to.effective_id() {
+                BufferKey::Peer(*toid)
+            } else {
+                BufferKey::Addr(to.socket)
+            };
+            global.buffer.write().await.remove_connect(key);
             Err(new_io_error("no closest peer."))
         }
     }
@@ -791,7 +805,7 @@ impl Session {
                 }
 
                 if self.is_direct() {
-                    println!(
+                    debug!(
                         "SessionMessage RelayConnect to directly {}",
                         self.remote_peer.assist.to_hex()
                     );
@@ -847,7 +861,6 @@ impl Session {
             EndpointMessage::DHT(DHT(peers)) => {
                 if peers.len() > 0 {
                     for p in peers {
-                        println!("=== SYNC DHT: {} - {}", p.id.to_hex(), p.assist.to_hex());
                         if self.is_own_remote(&p) {
                             let new_g = self.global.clone();
                             own_spawn(p, new_g);
@@ -874,7 +887,7 @@ impl Session {
                 self.handle_core_data(e_data).await?;
             }
             EndpointMessage::RelayData(from, to, data) => {
-                println!(
+                debug!(
                     "Endpoint RelayData from: {}, to: {}",
                     from.to_hex(),
                     to.to_hex()
@@ -909,7 +922,7 @@ impl Session {
                             .peer_list
                             .read()
                             .await
-                            .next_closest(&to, &self.remote_peer.id)
+                            .next_closest(&to, &[self.remote_peer.id, self.remote_peer.assist])
                         {
                             let _ = sender.send(SessionMessage::RelayData(from, to, data)).await;
                         } else {
@@ -936,7 +949,6 @@ impl Session {
                         is_own = true;
                     }
 
-                    println!("remote_peer_id: {}", remote_peer_id.to_hex());
                     if let Some(sender) = self
                         .global
                         .buffer
@@ -999,7 +1011,7 @@ impl Session {
                             .peer_list
                             .read()
                             .await
-                            .next_closest(&to, &self.remote_peer.id)
+                            .next_closest(&to, &[self.remote_peer.id, self.remote_peer.assist])
                         {
                             let _ = sender
                                 .send(SessionMessage::RelayConnect(from_peer, to))
@@ -1061,7 +1073,7 @@ pub(crate) enum SessionMessage {
 
 /// new a channel for send message to session.
 pub(crate) fn new_session_channel() -> (Sender<SessionMessage>, Receiver<SessionMessage>) {
-    mpsc::channel(128)
+    mpsc::channel(1024)
 }
 
 /// core data transfer and encrypted.
