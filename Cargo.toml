@@ -1,10 +1,10 @@
 [package]
 name = "chamomile"
-version = "0.8.0"
+version = "0.10.8"
 authors = ["Dev <dev@cympletech.com>"]
 readme = "README.md"
 description = "Another P2P Library. Support IoT devices."
-repository = "https://mariuszmalek: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@github.com/HeyApplication/chamomile"
+repository = "https://github.com/cympletech/chamomile"
 keywords = ["distributed", "blockchain", "p2p", "libp2p", "peer-to-peer"]
 license = "MIT/Apache-2.0"
 edition = "2021"
@@ -15,7 +15,7 @@ members = [
 ]
 
 [dependencies]
-chamomile_types = { version = "0.8", path = "./types" }
+chamomile_types = { version = "0.10", path = "./types" }
 aes-gcm = "0.10"
 bit-vec = "0.6"
 bytes = {version = "1.1", features = ["serde"] }
