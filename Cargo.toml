@@ -1,10 +1,10 @@
 [package]
 name = "chamomile"
-version = "0.9.0"
+version = "0.10.8"
 authors = ["Dev <dev@cympletech.com>"]
 readme = "README.md"
 description = "Another P2P Library. Support IoT devices."
-repository = "https://mariuszmalek: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@github.com/HeyApplication/chamomile"
+repository = "https://github.com/cympletech/chamomile"
 keywords = ["distributed", "blockchain", "p2p", "libp2p", "peer-to-peer"]
 license = "MIT/Apache-2.0"
 edition = "2021"
@@ -15,16 +15,17 @@ members = [
 ]
 
 [dependencies]
-aes-gcm = "0.9"
+chamomile_types = { version = "0.10", path = "./types" }
+aes-gcm = "0.10"
 bit-vec = "0.6"
 bytes = {version = "1.1", features = ["serde"] }
-futures-util = { version = "0.3", default-features = false }
-quinn = { version = "0.8", features = ["ring"], default-features = false }
-quinn-proto = "0.8"
+quinn = "0.10"
+quinn-proto = "0.10"
 rand_chacha = "0.3"
-rcgen = "0.9"
-rustls = { version = "0.20", features = ["dangerous_configuration"] }
+rcgen = "0.11"
+rustls = { version = "0.21", features = ["dangerous_configuration"] }
 serde = { version = "1.0", features = ["derive"] }
+socket2 = "0.5"
 structopt = "0.3"
 thiserror = "1.0"
 tracing = "0.1"
@@ -32,11 +33,6 @@ tokio = { version = "1", features = ["full"] }
 webpki = "0.22"
 zeroize = { version = "1", features = ["zeroize_derive"] }
 
-chamomile_types = { version = "0.9", path = "./types" }
-
-[dependencies.x25519-dalek]
-git = "https://mariuszmalek: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@github.com/HeyApplication/x25519-dalek"
-
 [dev-dependencies]
-console-subscriber = "0.1"
+console-subscriber = "0.2"
 tracing-subscriber = "0.3"

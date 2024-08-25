@@ -1,15 +1,20 @@
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
-use std::{sync::Arc, time::Duration};
+use socket2::Socket;
+use std::{
+    collections::HashMap,
+    net::{SocketAddr, UdpSocket},
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use structopt::StructOpt;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::{io::Result, join, select, task::JoinHandle};
+use tokio::{io::Result, join, select, sync::RwLock, task::JoinHandle};
 
 use crate::session_key::SessionKey;
 
 use super::{
-    new_endpoint_channel, EndpointMessage, RemotePublic, TransportRecvMessage, TransportSendMessage,
+    new_endpoint_channel, EndpointMessage, RemotePublic, TransportRecvMessage,
+    TransportSendMessage, CONNECTING_WAITING,
 };
 
 const DOMAIN: &str = "chamomile.quic";
@@ -26,15 +31,27 @@ pub async fn start(
 ) -> tokio::io::Result<SocketAddr> {
     let config = InternalConfig::try_from_config(Default::default()).unwrap();
 
-    let (endpoint, mut incoming) = quinn::Endpoint::server(config.server.clone(), bind_addr)?;
+    let udp_socket = UdpSocket::bind(&bind_addr)?;
+    let socket = Socket::from(udp_socket);
+    socket.set_reuse_address(true)?;
+    let new_udp_socket: UdpSocket = socket.into();
+
+    let endpoint = quinn::Endpoint::new(
+        Default::default(),
+        Some(config.server.clone()),
+        new_udp_socket,
+        Arc::new(quinn::TokioRuntime),
+    )
+    .unwrap();
     let addr = endpoint.local_addr()?;
     info!("QUIC listening at: {:?}", addr);
 
     // QUIC listen incoming.
     let out_send = send.clone();
+    let incoming = endpoint.clone();
     let task = tokio::spawn(async move {
         loop {
-            match incoming.next().await {
+            match incoming.accept().await {
                 Some(quinn_conn) => match quinn_conn.await {
                     Ok(conn) => {
                         if both {
@@ -46,6 +63,7 @@ pub async fn start(
                                 out_sender,
                                 self_receiver,
                                 OutType::DHT(out_send.clone(), self_sender, out_receiver),
+                                None,
                                 None,
                             ));
                         }
@@ -70,11 +88,11 @@ pub async fn start(
 async fn connect_to(
     connect: std::result::Result<quinn::Connecting, quinn::ConnectError>,
     remote_pk: RemotePublic,
-) -> Result<quinn::NewConnection> {
+) -> Result<quinn::Connection> {
     let conn = connect
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "connecting failure."))?
         .await?;
-    let mut stream = conn.connection.open_uni().await?;
+    let mut stream = conn.open_uni().await?;
     stream
         .write_all(&EndpointMessage::Handshake(remote_pk).to_bytes())
         .await?;
@@ -87,9 +105,9 @@ async fn dht_connect_to(
     out_send: Sender<TransportRecvMessage>,
     remote_pk: RemotePublic,
     session_key: SessionKey,
+    connectiongs: Arc<RwLock<HashMap<SocketAddr, Instant>>>,
 ) -> Result<()> {
     let conn = connect_to(connect, remote_pk).await?;
-
     let (self_sender, self_receiver) = new_endpoint_channel();
     let (out_sender, out_receiver) = new_endpoint_channel();
 
@@ -99,6 +117,7 @@ async fn dht_connect_to(
         self_receiver,
         OutType::DHT(out_send, self_sender, out_receiver),
         Some(session_key),
+        Some(connectiongs),
     )
     .await
 }
@@ -108,9 +127,20 @@ async fn stable_connect_to(
     out_sender: Sender<EndpointMessage>,
     self_receiver: Receiver<EndpointMessage>,
     remote_pk: RemotePublic,
+    connectiongs: Arc<RwLock<HashMap<SocketAddr, Instant>>>,
 ) -> Result<()> {
     match connect_to(connect, remote_pk).await {
-        Ok(conn) => process_stream(conn, out_sender, self_receiver, OutType::Stable, None).await,
+        Ok(conn) => {
+            process_stream(
+                conn,
+                out_sender,
+                self_receiver,
+                OutType::Stable,
+                None,
+                Some(connectiongs),
+            )
+            .await
+        }
         Err(_) => {
             let _ = out_sender.send(EndpointMessage::Close).await;
             Ok(())
@@ -125,9 +155,24 @@ async fn run_self_recv(
     out_send: Sender<TransportRecvMessage>,
     task: JoinHandle<()>,
 ) -> Result<()> {
+    let connecting: Arc<RwLock<HashMap<SocketAddr, Instant>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+
     while let Some(m) = recv.recv().await {
         match m {
             TransportSendMessage::Connect(addr, remote_pk, session_key) => {
+                let read_lock = connecting.read().await;
+                if let Some(time) = read_lock.get(&addr) {
+                    if time.elapsed().as_secs() < CONNECTING_WAITING {
+                        drop(read_lock);
+                        continue;
+                    }
+                }
+                drop(read_lock);
+                let mut lock = connecting.write().await;
+                lock.insert(addr, Instant::now());
+                drop(lock);
+
                 let connect = endpoint.connect_with(client_cfg.clone(), addr, DOMAIN);
                 info!("QUIC dht connect to: {:?}", addr);
                 tokio::spawn(dht_connect_to(
@@ -135,9 +180,22 @@ async fn run_self_recv(
                     out_send.clone(),
                     remote_pk,
                     session_key,
+                    connecting.clone(),
                 ));
             }
             TransportSendMessage::StableConnect(out_sender, self_receiver, addr, remote_pk) => {
+                let read_lock = connecting.read().await;
+                if let Some(time) = read_lock.get(&addr) {
+                    if time.elapsed().as_secs() < CONNECTING_WAITING {
+                        drop(read_lock);
+                        continue;
+                    }
+                }
+                drop(read_lock);
+                let mut lock = connecting.write().await;
+                lock.insert(addr, Instant::now());
+                drop(lock);
+
                 let connect = endpoint.connect_with(client_cfg.clone(), addr, DOMAIN);
                 info!("QUIC stable connect to: {:?}", addr);
                 tokio::spawn(stable_connect_to(
@@ -145,10 +203,12 @@ async fn run_self_recv(
                     out_sender,
                     self_receiver,
                     remote_pk,
+                    connecting.clone(),
                 ));
             }
             TransportSendMessage::Stop => {
                 task.abort();
+                endpoint.close(0u8.into(), &[]);
                 break;
             }
         }
@@ -167,50 +227,42 @@ enum OutType {
 }
 
 async fn process_stream(
-    conn: quinn::NewConnection,
+    conn: quinn::Connection,
     out_sender: Sender<EndpointMessage>,
     mut self_receiver: Receiver<EndpointMessage>,
     out_type: OutType,
     has_session: Option<SessionKey>,
+    connectiongs: Option<Arc<RwLock<HashMap<SocketAddr, Instant>>>>,
 ) -> tokio::io::Result<()> {
-    let quinn::NewConnection {
-        connection,
-        mut uni_streams,
-        ..
-    } = conn;
-    let addr = connection.remote_address();
+    let addr = conn.remote_address();
 
     let handshake: std::result::Result<RemotePublic, ()> = select! {
         v = async {
-            if let Some(result) = uni_streams.next().await {
-                match result {
-                    Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
-                        debug!("Connection terminated by peer {:?}.", addr);
-                        Err(())
-                    }
-                    Err(err) => {
-                        debug!(
-                            "Failed to read incoming message on uni-stream for peer {:?} with error: {:?}",
-                            addr, err
-                        );
-                        Err(())
-                    }
-                    Ok(recv) => {
-                        if let Ok(bytes) = recv.read_to_end(SIZE_LIMIT).await {
-                            if let Ok(EndpointMessage::Handshake(remote_pk)) =
-                                EndpointMessage::from_bytes(bytes)
-                            {
-                                return Ok(remote_pk);
-                            } else {
-                                Err(())
-                            }
+            match conn.accept_uni().await {
+                Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
+                    debug!("Connection terminated by peer {:?}.", addr);
+                    Err(())
+                }
+                Err(err) => {
+                    debug!(
+                        "Failed to read incoming message on uni-stream for peer {:?} with error: {:?}",
+                        addr, err
+                    );
+                    Err(())
+                }
+                Ok(mut recv) => {
+                    if let Ok(bytes) = recv.read_to_end(SIZE_LIMIT).await {
+                        if let Ok(EndpointMessage::Handshake(remote_pk)) =
+                            EndpointMessage::from_bytes(bytes)
+                        {
+                            return Ok(remote_pk);
                         } else {
                             Err(())
                         }
+                    } else {
+                        Err(())
                     }
                 }
-            } else {
-                Err(())
             }
         } => v,
         v = async {
@@ -253,11 +305,19 @@ async fn process_stream(
         }
     }
 
+    if let Some(connectiongs) = connectiongs {
+        let mut lock = connectiongs.write().await;
+        lock.remove(&addr);
+        drop(lock);
+        drop(connectiongs);
+    }
+
+    let conn_send = conn.clone();
     let a = async move {
         loop {
             match self_receiver.recv().await {
                 Some(msg) => {
-                    let mut writer = connection.open_uni().await.map_err(|_e| ())?;
+                    let mut writer = conn_send.open_uni().await.map_err(|_e| ())?;
                     let is_close = match msg {
                         EndpointMessage::Close => true,
                         _ => false,
@@ -279,37 +339,33 @@ async fn process_stream(
 
     let b = async {
         loop {
-            match uni_streams.next().await {
-                Some(result) => match result {
-                    Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
-                        debug!("Connection terminated by peer {:?}.", addr);
-                        break;
-                    }
-                    Err(err) => {
-                        debug!(
-                            "Failed to read incoming message on uni-stream for peer {:?} with error: {:?}",
-                            addr, err
-                        );
-                        break;
-                    }
-                    Ok(recv) => {
-                        if let Ok(bytes) = recv.read_to_end(SIZE_LIMIT).await {
-                            if let Ok(msg) = EndpointMessage::from_bytes(bytes) {
-                                let _ = out_sender.send(msg).await;
-                            }
+            match conn.accept_uni().await {
+                Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
+                    debug!("Connection terminated by peer {:?}.", addr);
+                    break;
+                }
+                Err(err) => {
+                    debug!(
+                        "Failed to read incoming message on uni-stream for peer {:?} with error: {:?}",
+                        addr, err
+                    );
+                    break;
+                }
+                Ok(mut recv) => {
+                    if let Ok(bytes) = recv.read_to_end(SIZE_LIMIT).await {
+                        if let Ok(msg) = EndpointMessage::from_bytes(bytes) {
+                            let _ = out_sender.send(msg).await;
                         }
                     }
-                },
-                None => break,
+                }
             }
         }
-
-        Err::<(), ()>(())
     };
 
     let _ = join!(a, b);
 
     info!("close stream: {}", addr);
+    conn.close(0u8.into(), &[]);
     Ok(())
 }
 
@@ -401,7 +457,7 @@ impl InternalConfig {
             .set_certificate_verifier(Arc::new(SkipCertificateVerification));
 
         let mut config = quinn::ClientConfig::new(Arc::new(client_crypto));
-        config.transport = transport;
+        config.transport_config(transport);
         config
     }
 

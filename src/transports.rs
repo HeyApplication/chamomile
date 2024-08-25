@@ -16,21 +16,24 @@ mod udt;
 use crate::hole_punching::{Hole, DHT};
 use crate::session_key::SessionKey;
 
+/// waiting for connect time
+pub const CONNECTING_WAITING: u64 = 60; // 60s
+
 /// new a channel for send TransportSendMessage.
 pub fn new_transport_send_channel() -> (Sender<TransportSendMessage>, Receiver<TransportSendMessage>)
 {
-    mpsc::channel(128)
+    mpsc::channel(1024)
 }
 
 /// new a channel for receive EndpointIncomingMessage.
 pub fn new_transport_recv_channel() -> (Sender<TransportRecvMessage>, Receiver<TransportRecvMessage>)
 {
-    mpsc::channel(128)
+    mpsc::channel(1024)
 }
 
 /// new a channel for EndpointSendMessage between in session's and transport stream.
 pub fn new_endpoint_channel() -> (Sender<EndpointMessage>, Receiver<EndpointMessage>) {
-    mpsc::channel(128)
+    mpsc::channel(1024)
 }
 
 /// Endpoint can receied this message channel.
