@@ -12,7 +12,7 @@ use chamomile_types::{
     Peer, PeerId,
 };
 
-use crate::buffer::{Buffer, BufferKey};
+use crate::buffer::Buffer;
 use crate::kad::KadValue;
 use crate::peer_list::PeerList;
 use crate::session_key::SessionKey;
@@ -43,8 +43,8 @@ impl Global {
 
     #[inline]
     pub fn generate_remote(&self) -> (SessionKey, RemotePublic) {
-        let (session_key, dh_bytes) = SessionKey::generate(&self.key);
-        let remote_pk = RemotePublic(self.peer.clone(), dh_bytes);
+        let session_key = SessionKey::generate(&self.key);
+        let remote_pk = RemotePublic(self.peer.clone(), session_key.out_bytes(&self.key.public()));
         (session_key, remote_pk)
     }
 
@@ -54,10 +54,9 @@ impl Global {
         remote_id: &PeerId,
         dh_bytes: Vec<u8>,
     ) -> Option<(SessionKey, RemotePublic)> {
-        if let Some((session_key, dh_bytes)) =
-            SessionKey::generate_complete(&self.key, remote_id, dh_bytes)
-        {
-            let remote_pk = RemotePublic(self.peer.clone(), dh_bytes);
+        if let Some(session_key) = SessionKey::generate_complete(&self.key, remote_id, dh_bytes) {
+            let remote_pk =
+                RemotePublic(self.peer.clone(), session_key.out_bytes(&self.key.public()));
             Some((session_key, remote_pk))
         } else {
             None
@@ -106,15 +105,9 @@ impl Global {
             .map_err(|_e| new_io_error("Outside missing"))
     }
 
-    pub async fn add_tmp(
-        &self,
-        p: PeerId,
-        buffer: BufferKey,
-        k: KadValue,
-        d: bool,
-    ) -> Vec<(u64, Vec<u8>)> {
+    pub async fn add_tmp(&self, p: PeerId, k: KadValue, d: bool) -> Vec<(u64, Vec<u8>)> {
         let mut buffer_lock = self.buffer.write().await;
-        let stables = buffer_lock.remove_connect(buffer);
+        let stables = buffer_lock.remove_connect(&p);
         buffer_lock.add_tmp(p, k, d);
         drop(buffer_lock);
         stables
@@ -127,7 +120,7 @@ impl Global {
         is_direct: bool,
     ) -> (Vec<(u64, Vec<u8>)>, Vec<(u64, Vec<u8>)>) {
         let mut buffer_lock = self.buffer.write().await;
-        let connects = buffer_lock.remove_connect(BufferKey::Peer(peer_id));
+        let connects = buffer_lock.remove_connect(&peer_id);
         let results = buffer_lock.remove_result(&peer_id);
         buffer_lock.add_tmp(peer_id, kv, is_direct);
         drop(buffer_lock);

@@ -48,7 +48,7 @@ pub struct Peer {
     pub is_pub: bool,
 }
 
-// PEER_ID_LENGTH + ASSIST + SOCKET_ADDR_LENGTH + 2 = 20 + 20 + 18 + 2 = 60
+// PEER_ID_LENGTH + ASSIST + SOCKET_ADDR_LENGTH + 2 = 20 + 20 + 18 + 2 = 40
 pub const PEER_LENGTH: usize = 60;
 
 impl Peer {
@@ -197,8 +197,7 @@ impl Peer {
     /// example: "/ip4/127.0.0.1/tcp/1234"
     pub fn from_multiaddr_string(s: &str) -> Result<Self> {
         let mut ss = s.split("/");
-        let _ = ss.next(); // skip first
-        let _ = ss.next(); // skip ipv4 / ipv6
+        let _ = ss.next(); // ipv4 / ipv6
         let ipaddr = ss
             .next()
             .ok_or(new_io_error("peer string is invalid."))?

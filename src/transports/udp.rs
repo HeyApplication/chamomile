@@ -1,3 +1,4 @@
+use futures::select;
 use rand::{thread_rng, RngCore};
 use smol::{
     channel::{Receiver, Sender},
@@ -9,7 +10,6 @@ use smol::{
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::select;
 
 use super::{new_channel, new_stream_channel, EndpointMessage, StreamMessage};
 

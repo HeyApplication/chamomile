@@ -19,7 +19,7 @@ use chamomile_types::{
     Peer,
 };
 
-use crate::buffer::{Buffer, BufferKey};
+use crate::buffer::Buffer;
 use crate::config::Config;
 use crate::global::Global;
 use crate::hole_punching::{nat, DHT};
@@ -334,27 +334,6 @@ pub async fn start_with_key(
                         continue;
                     }
 
-                    // check peer is not effective and addr is effective
-                    if !to.effective_id() && to.effective_socket() {
-                        debug!("Outside: StableConnect start new connection with IP.");
-                        let delivery = delivery_split!(data, global.delivery_length);
-
-                        // add to stable buffer.
-                        let mut buffer_lock = global.buffer.write().await;
-                        if buffer_lock.add_connect(BufferKey::Addr(to.socket), tid, data) {
-                            debug!("Outside: StableConnect is processing, save to buffer.");
-                            drop(buffer_lock);
-                            continue;
-                        }
-                        drop(buffer_lock);
-
-                        let g = global.clone();
-                        tokio::spawn(async move {
-                            let _ = direct_stable(tid, delivery, to, g, recv_data, false).await;
-                        });
-                        continue;
-                    }
-
                     // 1. get it or closest peer.
                     let peer_list_lock = global.peer_list.read().await;
                     let results = peer_list_lock.get(&to.id);
@@ -394,7 +373,7 @@ pub async fn start_with_key(
                         // 4. add to stable buffer.
                         let mut buffer_lock = global.buffer.write().await;
                         let delivery = delivery_split!(data, global.delivery_length);
-                        if buffer_lock.add_connect(BufferKey::Peer(to.id), tid, data) {
+                        if buffer_lock.add_connect(to.id, tid, data) {
                             debug!("Outside: StableConnect is processing, save to buffer.");
                             drop(buffer_lock);
                             continue;
@@ -488,8 +467,8 @@ pub async fn start_with_key(
                         }
 
                         // 5. add to stable buffer.
-                        let delivery = delivery_split!(data, global.delivery_length);
                         let mut buffer_lock = global.buffer.write().await;
+                        let delivery = delivery_split!(data, global.delivery_length);
                         if buffer_lock.add_result(to.id, tid, data) {
                             debug!("Outside: StableResult is processing, save to buffer.");
                             drop(buffer_lock);

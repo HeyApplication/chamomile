@@ -30,9 +30,7 @@ impl PeerList {
     pub async fn save(&self) {
         let mut file_string = String::new();
         for addr in &self.allows {
-            if addr.effective_socket() {
-                file_string = format!("{}\n{}", file_string, addr.to_multiaddr_string());
-            }
+            file_string = format!("{}\n{}", file_string, addr.to_multiaddr_string());
         }
         let _ = fs::write(&self.save_path, file_string).await;
     }
@@ -130,11 +128,7 @@ impl PeerList {
             .flatten()
     }
 
-    pub fn next_closest(
-        &self,
-        target: &PeerId,
-        prev: &[PeerId],
-    ) -> Option<&Sender<SessionMessage>> {
+    pub fn next_closest(&self, target: &PeerId, prev: &PeerId) -> Option<&Sender<SessionMessage>> {
         self.stables
             .get(target)
             .map(|v| &(v.0).0)
@@ -144,7 +138,7 @@ impl PeerList {
     pub fn _ip_next_closest(
         &self,
         ip: &SocketAddr,
-        prev: &[SocketAddr],
+        prev: &SocketAddr,
     ) -> Option<&Sender<SessionMessage>> {
         self.dhts._ip_next_closest(ip, prev).map(|v| &v.0)
     }
